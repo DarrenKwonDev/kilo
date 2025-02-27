@@ -6,23 +6,35 @@
 #include <termios.h>
 #include <unistd.h>
 
-struct termios orig_termios;
+
+#define CTRL_KEY(k) ((k) & 0x1f)
+
+struct editorConfig {
+  struct termios orig_termios;
+};
+struct editorConfig E;
+
 
 void die(const char *s) {
+  write(STDOUT_FILENO, "\x1b[2J", 4);
+  write(STDOUT_FILENO, "\x1b[H", 3);
+
   perror(s);
   exit(1);
 }
 
 void disableRawMode() {
-  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == -1)
+
+  // TCSAFLUSH: 남아있는 입력/출력을 모두 비우고 적용
+  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == -1)
     die("tcsetattr");
 }
 
 void enableRawMode() {
-  if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) die("tcgetattr");
+  if (tcgetattr(STDIN_FILENO, &E.orig_termios) == -1) die("tcgetattr");
   atexit(disableRawMode);   // 프로그램이 종료되는 시점에 트리거 되는 함수 등록(golang의 defer 비슷한 느낌)
 
-  struct termios raw = orig_termios;
+  struct termios raw = E.orig_termios;
 
   // 입력 플래그 설정
   raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
@@ -53,21 +65,60 @@ void enableRawMode() {
   if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
 
+char editorReadKey() {
+  int nread;
+  char c;
+  while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
+    if (nread == -1 && errno != EAGAIN) die("read");
+  }
+  return c;
+}
+
+void editorProcessKeypress() {
+  char c = editorReadKey();
+  switch (c) {
+    case CTRL_KEY('q'):
+      write(STDOUT_FILENO, "\x1b[2J", 4);
+      write(STDOUT_FILENO, "\x1b[H", 3);
+
+      exit(0);
+      break;
+  }
+}
+
+void editorDrawRows() {
+  int y;
+  for (y = 0; y < 24; y++) {
+    write(STDOUT_FILENO, "~\r\n", 3);
+  }
+}
+
+void editorRefreshScreen() {
+  // \x1b: 이스케이프 문자(ASCII 27, 16진수로 1B)
+  // [: 이스케이프 시퀀스의 시작을 나타냄
+  // 2: 인자 값
+  // J: 명령어(Erase In Display)
+  write(STDOUT_FILENO, "\x1b[2J", 4);
+
+  // H: cursor position
+  write(STDOUT_FILENO, "\x1b[H", 3);
+
+  editorDrawRows();
+
+  write(STDOUT_FILENO, "\x1b[H", 3);
+
+}
+
+
+
 int main()
 {
   enableRawMode();
 
   while (1) {
-    char c = '\0';
-    if (read(STDIN_FILENO, &c, 1) == -1 && errno != EAGAIN) die("read");
-    if (iscntrl(c)) {
-      printf("%d\r\n", c);
-    } else {
-      printf("%d ('%c')\r\n", c, c);
-    }
-    if (c == 'q') break;
+    editorRefreshScreen();
+    editorProcessKeypress();
   }
-
 
   return 0;
 }
